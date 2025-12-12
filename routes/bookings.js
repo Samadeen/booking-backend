@@ -27,20 +27,67 @@ router.post('/', async (req, res) => {
       });
     }
 
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        error: 'Invalid email format',
+      });
+    }
+
+    // Validate date format (YYYY-MM-DD)
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(date)) {
+      return res.status(400).json({
+        error: 'Invalid date format. Expected YYYY-MM-DD',
+      });
+    }
+
+    // Validate time format (HH:MM)
+    const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
+    if (!timeRegex.test(time)) {
+      return res.status(400).json({
+        error: 'Invalid time format. Expected HH:MM (24-hour format)',
+      });
+    }
+
+    // Check if venue exists
+    const venueCheck = await pool.query('SELECT id FROM venues WHERE id = $1', [
+      venue_id,
+    ]);
+    if (venueCheck.rows.length === 0) {
+      return res.status(404).json({
+        error: `Venue with id '${venue_id}' not found`,
+      });
+    }
+
+    // Check if table_type exists (if provided)
+    if (table_type_id) {
+      const tableTypeCheck = await pool.query(
+        'SELECT id FROM table_types WHERE id = $1',
+        [table_type_id]
+      );
+      if (tableTypeCheck.rows.length === 0) {
+        return res.status(404).json({
+          error: `Table type with id '${table_type_id}' not found`,
+        });
+      }
+    }
+
     const result = await pool.query(
       `INSERT INTO bookings 
        (venue_id, table_type_id, full_name, email, phone, date, time, guests, special_requests, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending') RETURNING *`,
       [
         venue_id,
-        table_type_id,
+        table_type_id || null,
         full_name,
         email,
-        phone,
+        phone || null,
         date,
         time,
-        guests,
-        special_requests,
+        guests || null,
+        special_requests || null,
       ]
     );
 
@@ -49,8 +96,51 @@ router.post('/', async (req, res) => {
       booking: result.rows[0],
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Booking creation error:', error);
+
+    // Handle specific database errors
+    if (error.code === '23503') {
+      // Foreign key violation
+      if (error.constraint && error.constraint.includes('venue_id')) {
+        return res.status(404).json({
+          error: `Venue with id '${req.body.venue_id}' not found`,
+          details: error.message,
+        });
+      }
+      if (error.constraint && error.constraint.includes('table_type_id')) {
+        return res.status(404).json({
+          error: `Table type with id '${req.body.table_type_id}' not found`,
+          details: error.message,
+        });
+      }
+      return res.status(400).json({
+        error: 'Invalid reference: One or more referenced records do not exist',
+        details: error.message,
+      });
+    }
+
+    if (error.code === '23505') {
+      // Unique constraint violation
+      return res.status(409).json({
+        error: 'Duplicate entry: This booking already exists',
+        details: error.message,
+      });
+    }
+
+    if (error.code === '23502') {
+      // Not null constraint violation
+      return res.status(400).json({
+        error: 'Missing required field',
+        details: error.message,
+      });
+    }
+
+    // Generic error response with actual error message
+    res.status(500).json({
+      error: 'Server error',
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+    });
   }
 });
 
